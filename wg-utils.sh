@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       echo "${_HELP}"
-      exit 1
+      exit 0
       shift # past argument
       shift # past value
       ;;
@@ -72,6 +72,7 @@ LIST_USER="${LIST_USER:-false}"
 ADD_USER="${ADD_USER:-false}"
 
 function main() {
+    dpkg -s wireguard &> /dev/null || (echo "Пакет wireguard НЕ установлен"; exit 1;);
 
     if ${LIST_USER}; then get_list_user; exit 0; fi
     if ${GET_NEXT_IPV4}; then VERBOSE=true find_next_ipv4; exit 0; fi
@@ -117,6 +118,7 @@ function find_next_ipv4() {
 
 
 function add_new_user() {
+mkdir /etc/wireguard/clients/ -p
 
 client_ipv4=$(find_next_ipv4)/32
 wg_interface="${INTERFACE}"
@@ -154,7 +156,6 @@ PresharedKey = ${client_psk}
 PublicKey = ${server_public}
 EOF
 }
-
 
 function get_list_user() {
     find /etc/wireguard/clients/ -iname '*.client.conf' | awk -F '/' '{print $NF}' | awk -F '.' '{print $1}'
