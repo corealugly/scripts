@@ -8,6 +8,7 @@ shopt -s lastpipe
 CREATE=false
 DELETE=false
 FORCE=false
+MERGE=false
 LIST_USER=false
 NEXT_IPV4=false
 NEXT_IPV6=false
@@ -20,38 +21,40 @@ CLIENT_UUID=$(cat /proc/sys/kernel/random/uuid)
 POSITIONAL_ARGS=()
 
 function show_help { 
-    cat << EOF
-Usage: ${0} [GLOBAL_OPTIONS] <action> [ACTION_OPTIONS]
+cat << EOF
+Usage: ${0} [GLOBAL_OPTIONS] <action> ifname [ACTION_OPTIONS]
 
 Global Options:
   -h, --help         Show this help message
 
 Available Actions:
-  server   
+  intreface <ifname>
     Options:
-      -c,--create           Create interface
-      -d,--delete           Delete interface
-      -i,--interface STRING WG interface name
-      -p,--port      STRING port
-      -4,--ipv4             add ipv4 subnet for wg private network
-      -6,--ipv6             add ipv6 subnet for wg private network
-      -m,--merge            add client *.server.conf to wg*.conf
-  client   
+      -c,--create             Create interface
+      -d,--delete             Delete interface
+      -p,--port        STRING port
+      -4,--subnet_ipv4        add ipv4 subnet for wg private network
+      -6,--subnet_ipv6        add ipv6 subnet for wg private network
+      -m,--merge              add client *.server.conf to wg*.conf
+  client <ifname>
     Options:
       -c,--create           Create client config
       -d,--delete           Delete client config
-      -i,--interface STRING WG intreface name
       -u,--uuid      STRING client uuid  *.key *.wg*.server.conf *.wg*.client.conf
       --next_ipv4           get next free ip
       --next_ipv6           get next free ip
       -l,--list_user        get list user uuid
 
 EOF
-    exit 0
+exit 0
 }
 
 if [[ $# == 0 ]]; then set -- "-h"; fi
 
+show_version() {
+    echo "Script version 0.0.5"
+    exit 0
+}
 
 # Функция для обработки ошибок
 die() {
@@ -64,11 +67,18 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
             show_help
-            ;;
-        server|client)
+	    ;;
+        #-l|--list)
+        #    show_help
+        #    ;;
+        interface|client)
             ACTION="$1"
-            shift
-            # Переходим к парсингу опций действия
+            # Проверка что указано имя (не пустое и не начинается с -)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                die "Name must be specified for $1 and cannot start with '-'"
+            fi
+            INTERFACE="$2"
+            shift 2
             break
             ;;
         --)
@@ -88,7 +98,7 @@ done
 
 while [[ $# -gt 0 ]]; do
   case ${ACTION} in
-    server)
+    interface)
       case $1 in
         -c|--create)
           CREATE=true
@@ -102,14 +112,6 @@ while [[ $# -gt 0 ]]; do
         #  FORCE=true
         #  shift
         #  ;;
-        -i|--interface)
-          if [[ -z "$2" || "$2" == -* ]]; then
-              echo "ERROR: name not specified for $1" >&2
-              exit 1
-          fi
-          INTERFACE=${2}
-          shift 2
-          ;;
         -p|--port)
           PORT=${2}
           shift 2
@@ -122,7 +124,7 @@ while [[ $# -gt 0 ]]; do
 	  IPV6_CIDR=${2}
           shift 2
           ;;
-        -m|--merge)
+        -m|--merge_client)
           MERGE=true
           shift 
           ;;
@@ -151,11 +153,7 @@ while [[ $# -gt 0 ]]; do
         #  FORCE=true
         #  shift
         #  ;;
-        -i|--interface)
-          INTERFACE="${2}"
-          shift 2
-          ;;
-        -n|--name|--comment)
+        --comment)
           if [[ -z "$2" || "$2" == -* ]]; then
               echo "ERROR: name not specified for $1" >&2
               exit 1
@@ -197,23 +195,24 @@ function main() {
     dpkg -s wireguard &> /dev/null || (echo "Пакет wireguard НЕ установлен"; exit 1;);
 
     case ${ACTION} in
+        interface)
+            if ${CREATE}; then create_wg_interface_config; exit 0; fi
+            if ${DELETE}; then delete_wg_interface_config; exit 0; fi
+            if ${MERGE}; then merge; exit 0; fi
+	    show_wg_interface_config
+            ;;
         client)
             if ${NEXT_IPV4}; then VERBOSE=true find_next_ipv4; exit 0; fi
             #if ${NEXT_IPV6}; then VERBOSE=true find_next_ipv6; exit 0; fi
             if ${LIST_USER}; then get_list_user; exit 0; fi
             if ${CREATE}; then create_client; exit 0; fi
             if ${DELETE}; then delete_client; exit 0; fi
-	    ;;
-	server)
-            if ${CREATE}; then create_wg_interface_config; exit 0; fi
-            if ${DELETE}; then delete_wg_interface_config; exit 0; fi
-            if ${MERGE}; then merge; exit 0; fi
-	    ;;
+            ;;
     esac    
 }
 
 function merge() {
-local wg_interface=${INTERFACE:-'wg0'}
+local wg_interface=${INTERFACE:-''}
 
 if ! [[ -e /etc/wireguard/${wg_interface}.conf ]]; then 
     echo "INFO: /etc/wireguard/${wg_interface}.conf not exist";
@@ -231,12 +230,29 @@ do
     cat ${client} >> /etc/wireguard/${wg_interface}.conf
 done
 
-cat << EOF
-------
-file: /etc/wireguard/${wg_interface}.conf
-------
-$(cat /etc/wireguard/${wg_interface}.conf)
-EOF
+show_wg_interface_config
+
+}
+
+function show_wg_interface_config() {
+local wg_interface=${INTERFACE:-''}
+
+echo "Show ${wg_interface} - key, pub, config"
+find /etc/wireguard/ -maxdepth 1 \
+                     -type f \
+                     -regextype posix-extended  \
+                     -iregex ".*${wg_interface}\.(conf|key|pub)$" \
+                     -print 
+
+if [ -e "/etc/wireguard/${wg_interface}.conf" ]; then
+    cat <<- EOF | sed 's/^ *//'
+        ------
+        file: /etc/wireguard/${wg_interface}.conf
+        ------
+        $(cat /etc/wireguard/${wg_interface}.conf)
+	EOF
+else die "interface ${wg_interface}.conf not exist"
+fi
 }
 
 function asksure() {
@@ -272,7 +288,7 @@ function create_wg_interface_config() {
 local wg_interface=${INTERFACE:-'wg0'}
 local wg_port=${PORT:-'51820'}
 local wg_ipv4_cidr=${IPV4_CIDR:-'172.0.0.1/24'}
-#local wg_ipv6_cidr=${IPV6_CIDR:-'fd00::1/64'}
+local wg_ipv6_cidr=${IPV6_CIDR:-'fd00::1/64'}
 
 if [[ -z "${wg_interface}" ]]; then die "interface not set"; fi
 if [[ -e /etc/wireguard/${wg_interface}.key  ||
@@ -294,13 +310,9 @@ Address = ${wg_ipv4_cidr}
 PostUp = wg set %i private-key /etc/wireguard/%i.key
 EOF
 
-echo "Created ${wg_interface} - key, pub, config"
-find /etc/wireguard/ -maxdepth 1 \
-                     -type f \
-                     -regextype posix-extended  \
-                     -iregex ".*${wg_interface}\.(conf|key|pub)$" \
-                     -print 
+show_wg_interface_config
 }
+
 
 function delete_client() {
     local wg_interface=${INTERFACE}
@@ -318,7 +330,6 @@ function delete_client() {
 				     -print \
 				     -delete
     fi
-
 }
 
 function find_next_ipv4() {
@@ -350,7 +361,7 @@ function find_next_ipv4() {
 }
 
 function create_client() {
-local wg_interface=${INTERFACE:-'wg0'}
+local wg_interface=${INTERFACE:-''}
 local client_uuid=${CLIENT_UUID:-$(cat /proc/sys/kernel/random/uuid)}
 if [[ ${COMMENT} != '' ]]; then
     local comment="#Comment: ${COMMENT:-''}"
